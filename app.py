@@ -9,6 +9,8 @@
 
 import json
 import ipaddress
+import logging
+import math
 import os
 import threading
 from urllib.parse import urlparse
@@ -22,6 +24,17 @@ from task_manager import TaskManager
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
+
+class TaskPollingAccessLogFilter(logging.Filter):
+    """减少任务列表每秒轮询产生的访问日志噪声。"""
+
+    def filter(self, record):
+        message = record.getMessage()
+        return '"GET /api/tasks ' not in message and '"GET /api/tasks?' not in message
+
+
+logging.getLogger('werkzeug').addFilter(TaskPollingAccessLogFilter())
+
 # 全局任务管理器
 task_manager = TaskManager()
 
@@ -29,6 +42,55 @@ task_manager = TaskManager()
 CONFIG_FILE = 'config.json'
 PRIORITIES_FILE = 'seat_priorities.json'  # 新增:座位优先级配置文件
 CONFIG_LOCK = threading.RLock()
+
+DEFAULT_TASK_SETTINGS = {
+    'auto_empty_poll_seconds': 1.0,
+    'auto_after_attempt_poll_seconds': 0.2,
+    'max_parallel_workers': 10,
+    'api_timeout_seconds': 15,
+    'api_max_retries': 3,
+}
+
+TASK_SETTING_RULES = {
+    'auto_empty_poll_seconds': (float, 0.2, 60),
+    'auto_after_attempt_poll_seconds': (float, 0.2, 60),
+    'max_parallel_workers': (int, 1, 10),
+    'api_timeout_seconds': (int, 1, 120),
+    'api_max_retries': (int, 0, 3),
+}
+
+
+def normalize_task_settings(values, fallback=None, strict=False):
+    """合并并校验抢票策略设置。"""
+    if not isinstance(values, dict):
+        if strict:
+            raise ValueError('抢票策略设置格式无效')
+        values = {}
+
+    normalized = dict(DEFAULT_TASK_SETTINGS)
+    raw_settings = {}
+    if isinstance(fallback, dict):
+        raw_settings.update(fallback)
+    raw_settings.update(values)
+
+    for key, (value_type, minimum, maximum) in TASK_SETTING_RULES.items():
+        if key not in raw_settings:
+            continue
+        try:
+            numeric_value = float(raw_settings[key])
+            if not math.isfinite(numeric_value):
+                raise ValueError
+            if value_type is int and not numeric_value.is_integer():
+                raise ValueError
+            value = value_type(numeric_value)
+            if not minimum <= value <= maximum:
+                raise ValueError
+            normalized[key] = value
+        except (TypeError, ValueError, OverflowError):
+            if strict:
+                raise ValueError(f'{key} 超出允许范围或格式无效')
+
+    return normalized
 
 
 def load_config():
@@ -41,6 +103,10 @@ def load_config():
             config = {}
         config.setdefault('API_HOST', 'hqapp1.bit.edu.cn')
         config.setdefault('USER_ID', '')
+        config['task_settings'] = normalize_task_settings(
+            config.get('task_settings', {}),
+            fallback=DEFAULT_TASK_SETTINGS,
+        )
         return config
 
 
@@ -208,12 +274,27 @@ def delete_task(task_id):
 
 @app.route('/api/tasks/<task_id>/cancel', methods=['POST'])
 def cancel_task(task_id):
-    """取消任务"""
+    """暂停任务"""
     try:
         task_manager.cancel_task(task_id)
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/tasks/<task_id>/resume', methods=['POST'])
+def resume_task(task_id):
+    """重新启动尚未到发车时间的已暂停任务。"""
+    try:
+        config = load_config()
+        if not config.get('USER_ID'):
+            return jsonify({'success': False, 'error': '请先登录班车服务'}), 400
+        success, message = task_manager.resume_task(task_id, config)
+        if success:
+            return jsonify({'success': True, 'message': message})
+        return jsonify({'success': False, 'error': message}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/config', methods=['GET', 'POST'])
@@ -237,9 +318,15 @@ def manage_config():
                 return jsonify({'success': False, 'error': '当前只支持 hqapp1.bit.edu.cn'})
 
             config['API_HOST'] = api_host
-            for key in ('notification_methods', 'email_config', 'wechat_config'):
+            for key in ('notification_methods', 'email_config', 'wechat_config', 'dingtalk_config'):
                 if key in incoming:
                     config[key] = incoming[key]
+            if 'task_settings' in incoming:
+                config['task_settings'] = normalize_task_settings(
+                    incoming['task_settings'],
+                    fallback=config.get('task_settings'),
+                    strict=True,
+                )
             config.pop('API_TOKEN', None)
             config.pop('API_TIME', None)
             save_config(config)

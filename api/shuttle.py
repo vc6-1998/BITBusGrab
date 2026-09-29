@@ -379,13 +379,21 @@ class ShuttleAPI:
 
         # 解析响应
         response_data = self._parse_json_response(body, "get_shuttle_list")
+        if not isinstance(response_data, dict):
+            raise BusinessError("Invalid shuttle list response")
 
         # 检查业务错误码
         code = response_data.get("code")
         if code == "SYS_UNKNOWN":
             raise BusinessError("System error occurred")
 
-        data = response_data.get("data", [])
+        data = response_data.get("data")
+        if data is None:
+            # 查询已过期班次等情况时，服务端可能返回 data: null。
+            data = []
+        elif not isinstance(data, list):
+            raise BusinessError("Invalid shuttle list response: data must be a list")
+
         self.logger.info(f"Retrieved {len(data)} shuttles for {date} ({address})")
 
         return data
@@ -440,7 +448,7 @@ class ShuttleAPI:
         response_data = self._parse_json_response(body, "get_reserved_seats")
 
         data = response_data.get("data", {})
-        self.logger.info(
+        self.logger.debug(
             f"Retrieved seat info for shuttle {shuttle_id}: "
             f"reserved={data.get('reserved_count', 'N/A')}, "
             f"remaining={data.get('reservation_num', 'N/A')}"

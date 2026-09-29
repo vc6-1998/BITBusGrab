@@ -2,6 +2,7 @@
 .env
 config.json
 seat_priorities.json
+tasks.sqlite3*
 
 # ---> Python
 # Byte-compiled / optimized / DLL files

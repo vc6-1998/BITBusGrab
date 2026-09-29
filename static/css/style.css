@@ -170,6 +170,20 @@ body {
     border-left-color: var(--danger-color);
 }
 
+.task-item.is-departed {
+    background-color: #f1f3f5;
+    border-left-color: #adb5bd;
+}
+
+.task-item.is-departed h6 {
+    color: #6c757d;
+}
+
+.task-payment-deadline {
+    color: #b02a37;
+    font-weight: 600;
+}
+
 .status-badge {
     font-size: 0.85em;
     padding: 4px 8px;

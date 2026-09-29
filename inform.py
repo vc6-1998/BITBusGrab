@@ -96,7 +96,6 @@ class EmailNotification(NotificationService):
             server.sendmail(sender_email, [receiver_email], msg.as_string())
             server.quit()
 
-            self.logger.info(f"邮件通知发送成功: {title}")
             return True
 
         except Exception as e:
@@ -140,7 +139,6 @@ class WeChatWorkNotification(NotificationService):
             result = response.json()
 
             if result.get('errcode') == 0:
-                self.logger.info(f"企业微信通知发送成功: {title}")
                 return True
             else:
                 self.logger.error(f"企业微信通知发送失败: {result.get('errmsg')}")
@@ -148,6 +146,49 @@ class WeChatWorkNotification(NotificationService):
 
         except Exception as e:
             self.logger.error(f"企业微信通知发送失败: {str(e)}")
+            return False
+
+
+class DingTalkNotification(NotificationService):
+    """钉钉自定义机器人通知（关键词安全模式）"""
+
+    def send(self, title: str, message: str) -> bool:
+        try:
+            webhook_url = str(self.config.get('webhook_url', '')).strip()
+            keyword = str(self.config.get('keyword', '')).strip()
+
+            if not webhook_url:
+                self.logger.error("钉钉 Webhook URL 未配置")
+                return False
+            if not keyword:
+                self.logger.error("钉钉机器人关键词未配置")
+                return False
+
+            # 钉钉 Markdown 的硬换行要求在换行前加两个空格。
+            markdown_message = message.replace('\r\n', '\n').replace('\r', '\n')
+            markdown_message = markdown_message.replace('\n', '  \n')
+
+            # 关键词同时放入标题和正文，满足钉钉机器人的关键词校验。
+            content = f"**{keyword}**\n\n**{title}**\n\n{markdown_message}"
+            data = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "title": f"{keyword} {title}",
+                    "text": content,
+                },
+            }
+
+            response = requests.post(webhook_url, json=data, timeout=10)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get('errcode') == 0:
+                return True
+
+            self.logger.error(f"钉钉通知发送失败: {result.get('errmsg')}")
+            return False
+        except Exception as e:
+            self.logger.error(f"钉钉通知发送失败: {str(e)}")
             return False
 
 
@@ -163,6 +204,14 @@ class NotificationManager:
         """
         self.config = config
         self.logger = logging.getLogger(__name__)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            ))
+            self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
         self.services = []
 
         # 根据配置启用通知服务
@@ -172,16 +221,22 @@ class NotificationManager:
             email_config = config.get('email_config', {})
             if email_config:
                 self.services.append(EmailNotification(email_config))
-                self.logger.info("邮箱通知已启用")
+                self.logger.debug("邮箱通知已启用")
 
         if 'wechat_work' in enabled_methods:
             wechat_config = config.get('wechat_config', {})
             if wechat_config:
                 self.services.append(WeChatWorkNotification(wechat_config))
-                self.logger.info("企业微信通知已启用")
+                self.logger.debug("企业微信通知已启用")
+
+        if 'dingtalk' in enabled_methods:
+            dingtalk_config = config.get('dingtalk_config', {})
+            if dingtalk_config:
+                self.services.append(DingTalkNotification(dingtalk_config))
+                self.logger.debug("钉钉机器人通知已启用")
 
         if not self.services:
-            self.logger.warning("未启用任何通知服务")
+            self.logger.debug("未启用任何通知服务")
 
     def send_notification(self, title: str, message: str):
         """
@@ -192,7 +247,10 @@ class NotificationManager:
             message: 通知内容
         """
         if not self.services:
-            self.logger.info(f"[控制台通知] {title}: {message}")
+            self.logger.info(
+                'No notification service enabled; notification printed locally (title=%s)',
+                title,
+            )
             print(f"\n{'=' * 60}")
             print(f"📢 【{title}】")
             print(f"{message}")
@@ -200,7 +258,21 @@ class NotificationManager:
             return
 
         for service in self.services:
+            service_name = service.__class__.__name__
             try:
-                service.send(title, message)
+                sent = service.send(title, message)
+                if sent:
+                    self.logger.info(
+                        'Notification sent (service=%s, title=%s)', service_name, title
+                    )
+                else:
+                    self.logger.warning(
+                        'Notification not sent (service=%s, title=%s)', service_name, title
+                    )
             except Exception as e:
-                self.logger.error(f"通知发送失败 ({service.__class__.__name__}): {str(e)}")
+                self.logger.exception(
+                    'Notification failed with an exception (service=%s, title=%s): %s',
+                    service_name,
+                    title,
+                    e,
+                )

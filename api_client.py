@@ -28,11 +28,12 @@ class BusAPI:
         host = config.get('API_HOST', 'hqapp1.bit.edu.cn')
         # 移除协议前缀（ShuttleAPI 内部会添加 http://）
         host = host.replace('https://', '').replace('http://', '')
+        task_settings = config.get('task_settings', {})
 
         api_config = APIConfig(
             host=host,
-            timeout=15,
-            max_retries=3,
+            timeout=int(task_settings.get('api_timeout_seconds', 15)),
+            max_retries=int(task_settings.get('api_max_retries', 3)),
             debug=config.get('DEBUG', False)
         )
 

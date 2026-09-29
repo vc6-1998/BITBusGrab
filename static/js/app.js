@@ -4,6 +4,7 @@ let currentBusInfo = null;
 let currentDate = null;
 let selectedSeats = new Set();
 let isPriorityMode = false;
+let taskRefreshInProgress = false;
 
 // 路线配置
 const ROUTE_CONFIG = {
@@ -91,9 +92,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // 自动抢票模式切换
     document.getElementById('autoMode').addEventListener('change', function (e) {
-        document.getElementById('targetCountGroup').style.display =
-            e.target.checked ? 'block' : 'none';
+        if (e.target.checked) {
+            selectedSeats.clear();
+            document.querySelectorAll('#seatMap .seat.selected').forEach(seat => {
+                seat.classList.remove('selected');
+            });
+            updateSelectedSeats();
+        }
+        updateReservationModeUI();
     });
+    updateReservationModeUI();
 
     // 支持回车键查询
     document.getElementById('routeDirection').addEventListener('keypress', function (e) {
@@ -111,7 +119,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     // 定时刷新任务列表
-    setInterval(refreshTasks, 5000);
+    setInterval(refreshTasks, 1000);
 
     // 监听配置模态框的显示事件，保存当前配置
     const configModal = document.getElementById('configModal');
@@ -192,11 +200,35 @@ async function saveSeatPriorities() {
 // 更新已选座位显示
 function updateSelectedSeats() {
     const display = document.getElementById('selectedSeats');
+    if (!display) return;
     if (selectedSeats.size === 0) {
         display.textContent = '无';
     } else {
         display.textContent = Array.from(selectedSeats).sort((a, b) => a - b).join(', ');
     }
+}
+
+function updateReservationModeUI() {
+    const automatic = document.getElementById('autoMode').checked;
+    document.getElementById('targetCountGroup').style.display = automatic ? 'block' : 'none';
+
+    const hint = document.getElementById('seatModeHint');
+    hint.textContent = automatic
+        ? '自动模式会按优先级尝试所有可用座位，左键选座不生效。'
+        : '手动模式只尝试左键选中的座位，座位优先级不生效。';
+
+    document.getElementById('manualSeatSelection').classList.toggle('d-none', automatic);
+    const selectedSeatLegend = document.getElementById('selectedSeatLegend');
+    if (selectedSeatLegend) {
+        selectedSeatLegend.classList.toggle('d-none', automatic);
+    }
+
+    document.querySelectorAll('#seatMap .seat.available').forEach(seat => {
+        const seatId = seat.dataset.seatId;
+        seat.title = automatic
+            ? `座位 ${seatId} - 自动模式按优先级尝试 | 右键设置优先级`
+            : `座位 ${seatId} - 点击选择 | 右键设置优先级`;
+    });
 }
 
 // 切换座位选择
@@ -497,6 +529,7 @@ window.openSeatSelection = async function (busInfo) {
     currentBusId = busInfo.id;
     currentBusInfo = busInfo;
     selectedSeats.clear();
+    updateSelectedSeats();
 
     try {
         const response = await fetch(`/api/seats/${busInfo.id}?date=${currentDate}`);
@@ -504,6 +537,7 @@ window.openSeatSelection = async function (busInfo) {
 
         if (result.success) {
             displaySeats(result.data);
+            updateReservationModeUI();
             new bootstrap.Modal(document.getElementById('seatModal')).show();
         } else {
             toast.error(result.error || '获取座位信息失败');
@@ -532,7 +566,7 @@ function displaySeats(data) {
             <div class="legend-item"><span class="seat-sample available"></span><small>可选座位</small></div>
             <div class="legend-item"><span class="seat-sample reserved"></span><small>已被预订</small></div>
             <div class="legend-item"><span class="seat-sample disabled"></span><small>系统保留</small></div>
-            <div class="legend-item"><span class="seat-sample selected"></span><small>已选中</small></div>
+            <div class="legend-item" id="selectedSeatLegend"><span class="seat-sample selected"></span><small>已选中</small></div>
             <div class="legend-item"><span class="seat-sample" style="position: relative;"><span class="seat-priority high" style="position: absolute; top: -5px; right: -5px;">H</span></span><small>高优先级</small></div>
             <div class="legend-item"><span class="seat-sample" style="position: relative;"><span class="seat-priority low" style="position: absolute; top: -5px; right: -5px;">L</span></span><small>低优先级</small></div>
         </div>
@@ -585,12 +619,12 @@ function displaySeats(data) {
                         }
                     } else if (seat.status === 'available') {
                         seatElement.classList.add('available');
-                        seatElement.title = `座位 ${seatNum} - 点击选择 | 右键设置优先级`;
+                        seatElement.title = `座位 ${seatNum} | 右键设置优先级`;
 
                         // 左键点击选择座位
                         seatElement.addEventListener('click', (e) => {
                             e.preventDefault();
-                            if (!isPriorityMode) {
+                            if (!isPriorityMode && !document.getElementById('autoMode').checked) {
                                 toggleSeat(seatNum);
                             }
                         });
@@ -794,12 +828,16 @@ window.confirmReservation = async function () {
 
 // 刷新任务列表 - 全局函数
 window.refreshTasks = async function () {
+    if (taskRefreshInProgress) return;
+    taskRefreshInProgress = true;
     try {
         const response = await fetch('/api/tasks');
         const result = await response.json();
         if (result.success) displayTasks(result.data);
     } catch (error) {
         console.error('刷新任务失败:', error);
+    } finally {
+        taskRefreshInProgress = false;
     }
 };
 
@@ -818,7 +856,9 @@ function displayTasks(tasks) {
         running: 'arrow-repeat',
         success: 'check-circle',
         failed: 'x-circle',
-        cancelled: 'dash-circle'
+        cancelled: 'dash-circle',
+        paused: 'pause-circle',
+        interrupted: 'exclamation-circle'
     };
 
     const statusColors = {
@@ -827,7 +867,9 @@ function displayTasks(tasks) {
         running: 'primary',
         success: 'success',
         failed: 'danger',
-        cancelled: 'secondary'
+        cancelled: 'secondary',
+        paused: 'secondary',
+        interrupted: 'secondary'
     };
 
     const statusText = {
@@ -836,11 +878,13 @@ function displayTasks(tasks) {
         running: '抢票中',
         success: '成功',
         failed: '失败',
-        cancelled: '已取消'
+        cancelled: '已取消',
+        paused: '已暂停',
+        interrupted: '已中断'
     };
 
     container.innerHTML = tasks.map(task => `
-        <div class="task-item status-${task.status}">
+        <div class="task-item status-${task.status} ${task.is_departed ? 'is-departed' : ''}">
             <div class="d-flex justify-content-between align-items-start">
                 <div class="flex-grow-1">
                     <h6>
@@ -849,32 +893,50 @@ function displayTasks(tasks) {
                         <span class="badge bg-${statusColors[task.status] || 'secondary'} status-badge ms-2">
                             ${statusText[task.status] || task.status}
                         </span>
+                        ${task.is_departed ? '<span class="badge bg-secondary status-badge ms-1">已发车</span>' : ''}
                     </h6>
                     <p class="mb-1 text-muted small">
-                        <i class="bi bi-clock"></i> 发车: ${task.bus_info.origin_time || 'N/A'}
+                        <i class="bi bi-clock"></i> 发车: ${task.departure_time || task.bus_info.origin_time || 'N/A'}
                         ${task.start_time ? ` | 开抢: ${task.start_time}` : ''}
                     </p>
                     <p class="mb-1 text-muted small">
                         <i class="bi bi-calendar"></i> 创建: ${task.created_at || 'N/A'}
                     </p>
+                    ${task.status === 'success' ? `
+                    <p class="mb-1 text-muted small">
+                        <i class="bi bi-check-circle"></i> 成功时间：${task.success_at || '未记录（历史任务）'}
+                    </p>
+                    ${task.reserved_seats && task.reserved_seats.length > 0 ? `
+                    <p class="mb-0">
+                         <i class="bi bi-info-circle"></i> 已预订座位：<strong>${task.reserved_seats.join(', ')}</strong>
+                    </p> `: ''}
+                    ${task.payment_deadline_at ? `
+                    <p class="mb-1 task-payment-deadline">
+                        <i class="bi bi-alarm"></i> 请于 ${task.payment_deadline_at} 前完成支付${task.payment_deadline_passed ? '（截止时间已过）' : ''}
+                    </p>` : `
+                    <p class="mb-1 text-muted small">该历史任务没有成功时间记录，无法计算支付截止时间。</p>`}
+                    ${task.message && task.message.includes('\n') ? `
+                    <p class="mb-1 text-warning">${task.message.split('\n').slice(1).join('<br>')}</p>` : ''}
+                    ` : `
                     <p class="mb-1">
                         <i class="bi bi-info-circle"></i> ${task.message || '处理中...'}
-                    </p>
-                    ${task.reserved_seats && task.reserved_seats.length > 0 ?
-        `<p class="mb-0">
-                            <i class="bi bi-check-circle text-success"></i> 
-                            <strong>已预订座位:</strong> ${task.reserved_seats.join(', ')}
-                        </p>`
-        : ''}
+                    </p>`}
+
                     <p class="mb-0 text-muted small">
                         <i class="bi bi-gear"></i> 
-                        ${task.auto_mode ? `自动模式 (目标${task.target_count || 1}个)` : '手动模式'}
+                        ${task.auto_mode
+        ? `自动模式 (目标${task.target_count || 1}个)`
+        : `手动模式 (座位: ${task.seat_ids && task.seat_ids.length ? task.seat_ids.join(', ') : '无'})`}
                     </p>
                 </div>
                 <div class="btn-group">
                     ${task.status === 'running' || task.status === 'waiting' ?
-        `<button class="btn btn-sm btn-warning" onclick="cancelTask('${task.task_id}')" title="取消任务">
+        `<button class="btn btn-sm btn-warning" onclick="pauseTask('${task.task_id}')" title="暂停任务">
                             <i class="bi bi-pause-circle"></i>
+                        </button>` : ''}
+                    ${task.can_resume ?
+        `<button class="btn btn-sm btn-success" onclick="resumeTask('${task.task_id}')" title="重新启动任务">
+                            <i class="bi bi-play-fill"></i>
                         </button>` : ''}
                     <button class="btn btn-sm btn-danger" onclick="deleteTask('${task.task_id}')" title="删除任务">
                         <i class="bi bi-trash"></i>
@@ -885,19 +947,37 @@ function displayTasks(tasks) {
     `).join('');
 }
 
-// 取消任务 - 全局函数
-window.cancelTask = async function (taskId) {
-    const confirmed = await showConfirm('确定要取消此任务吗？', '取消任务');
+// 暂停任务 - 全局函数
+window.pauseTask = async function (taskId) {
+    const confirmed = await showConfirm('确定要暂停此任务吗？发车前可以重新启动。', '暂停任务');
     if (!confirmed) return;
     
     try {
         const response = await fetch(`/api/tasks/${taskId}/cancel`, {method: 'POST'});
         const result = await response.json();
         if (result.success) {
-            toast.success('任务已取消');
+            toast.success('任务已暂停');
             refreshTasks();
         } else {
-            toast.error(result.error || '取消失败');
+            toast.error(result.error || '暂停失败');
+        }
+    } catch (error) {
+        toast.error('网络请求失败: ' + error.message);
+    }
+};
+
+window.resumeTask = async function (taskId) {
+    const confirmed = await showConfirm('按原任务设置重新启动？', '重新启动任务');
+    if (!confirmed) return;
+
+    try {
+        const response = await fetch(`/api/tasks/${taskId}/resume`, {method: 'POST'});
+        const result = await response.json();
+        if (result.success) {
+            toast.success(result.message || '任务已重新启动');
+            refreshTasks();
+        } else {
+            toast.error(result.error || '重新启动失败');
         }
     } catch (error) {
         toast.error('网络请求失败: ' + error.message);
@@ -936,6 +1016,19 @@ async function loadConfig() {
             document.getElementById('apiHost').value = config.API_HOST || '';
             updateSsoAuthStatus(config.authenticated);
 
+            // 抢票策略
+            const taskSettings = config.task_settings || {};
+            document.getElementById('autoEmptyPollSeconds').value =
+                taskSettings.auto_empty_poll_seconds ?? 1;
+            document.getElementById('autoAfterAttemptPollSeconds').value =
+                taskSettings.auto_after_attempt_poll_seconds ?? 0.2;
+            document.getElementById('maxParallelWorkers').value =
+                taskSettings.max_parallel_workers ?? 10;
+            document.getElementById('apiTimeoutSeconds').value =
+                taskSettings.api_timeout_seconds ?? 15;
+            document.getElementById('apiMaxRetries').value =
+                taskSettings.api_max_retries ?? 3;
+
             // 通知配置
             const notificationMethods = config.notification_methods || [];
 
@@ -958,6 +1051,15 @@ async function loadConfig() {
             if (wechatEnabled && config.wechat_config) {
                 document.getElementById('wechatWebhook').value = config.wechat_config.webhook_url || '';
             }
+
+            // 钉钉机器人配置
+            const dingtalkEnabled = notificationMethods.includes('dingtalk');
+            document.getElementById('enableDingTalk').checked = dingtalkEnabled;
+
+            if (dingtalkEnabled && config.dingtalk_config) {
+                document.getElementById('dingtalkWebhook').value = config.dingtalk_config.webhook_url || '';
+                document.getElementById('dingtalkKeyword').value = config.dingtalk_config.keyword || '';
+            }
         }
     } catch (error) {
         console.error('加载配置失败:', error);
@@ -970,6 +1072,13 @@ function saveConfigCache() {
         // API配置
         API_HOST: document.getElementById('apiHost').value,
 
+        // 抢票策略
+        autoEmptyPollSeconds: document.getElementById('autoEmptyPollSeconds').value,
+        autoAfterAttemptPollSeconds: document.getElementById('autoAfterAttemptPollSeconds').value,
+        maxParallelWorkers: document.getElementById('maxParallelWorkers').value,
+        apiTimeoutSeconds: document.getElementById('apiTimeoutSeconds').value,
+        apiMaxRetries: document.getElementById('apiMaxRetries').value,
+
         // 通知配置
         enableEmail: document.getElementById('enableEmail').checked,
         smtpServer: document.getElementById('smtpServer').value,
@@ -979,7 +1088,11 @@ function saveConfigCache() {
         receiverEmail: document.getElementById('receiverEmail').value,
 
         enableWechat: document.getElementById('enableWechat').checked,
-        wechatWebhook: document.getElementById('wechatWebhook').value
+        wechatWebhook: document.getElementById('wechatWebhook').value,
+
+        enableDingTalk: document.getElementById('enableDingTalk').checked,
+        dingtalkWebhook: document.getElementById('dingtalkWebhook').value,
+        dingtalkKeyword: document.getElementById('dingtalkKeyword').value
     };
 }
 
@@ -989,6 +1102,13 @@ function restoreConfigCache() {
 
     // 恢复 API 配置
     document.getElementById('apiHost').value = configCache.API_HOST;
+
+    // 恢复抢票策略
+    document.getElementById('autoEmptyPollSeconds').value = configCache.autoEmptyPollSeconds;
+    document.getElementById('autoAfterAttemptPollSeconds').value = configCache.autoAfterAttemptPollSeconds;
+    document.getElementById('maxParallelWorkers').value = configCache.maxParallelWorkers;
+    document.getElementById('apiTimeoutSeconds').value = configCache.apiTimeoutSeconds;
+    document.getElementById('apiMaxRetries').value = configCache.apiMaxRetries;
 
     // 恢复通知配置
     document.getElementById('enableEmail').checked = configCache.enableEmail;
@@ -1001,6 +1121,10 @@ function restoreConfigCache() {
     document.getElementById('enableWechat').checked = configCache.enableWechat;
     document.getElementById('wechatWebhook').value = configCache.wechatWebhook;
 
+    document.getElementById('enableDingTalk').checked = configCache.enableDingTalk;
+    document.getElementById('dingtalkWebhook').value = configCache.dingtalkWebhook;
+    document.getElementById('dingtalkKeyword').value = configCache.dingtalkKeyword;
+
     // 清空缓存
     configCache = null;
 }
@@ -1009,10 +1133,18 @@ function restoreConfigCache() {
 window.saveConfig = async function () {
     const config = {
         API_HOST: document.getElementById('apiHost').value.trim() || 'hqapp1.bit.edu.cn',
+        task_settings: {
+            auto_empty_poll_seconds: Number(document.getElementById('autoEmptyPollSeconds').value),
+            auto_after_attempt_poll_seconds: Number(document.getElementById('autoAfterAttemptPollSeconds').value),
+            max_parallel_workers: Number(document.getElementById('maxParallelWorkers').value),
+            api_timeout_seconds: Number(document.getElementById('apiTimeoutSeconds').value),
+            api_max_retries: Number(document.getElementById('apiMaxRetries').value)
+        },
 
         notification_methods: [],
         email_config: {},
-        wechat_config: {}
+        wechat_config: {},
+        dingtalk_config: {}
     };
 
     if (document.getElementById('enableEmail').checked) {
@@ -1031,6 +1163,18 @@ window.saveConfig = async function () {
         config.wechat_config = {
             webhook_url: document.getElementById('wechatWebhook').value.trim()
         };
+    }
+
+    if (document.getElementById('enableDingTalk').checked) {
+        const webhookUrl = document.getElementById('dingtalkWebhook').value.trim();
+        const keyword = document.getElementById('dingtalkKeyword').value.trim();
+        if (!webhookUrl || !keyword) {
+            toast.error('请填写钉钉机器人 Webhook URL 和安全关键词');
+            return;
+        }
+
+        config.notification_methods.push('dingtalk');
+        config.dingtalk_config = {webhook_url: webhookUrl, keyword};
     }
 
     try {
