@@ -59,9 +59,11 @@
 
 - **任务管理**
     - 📝 任务列表实时更新
-    - 🔍 任务状态追踪（准备中/等待开抢/抢票中/成功/失败）
-    - ⏸️ 支持取消和删除任务
-    - 📊 显示抢票进度和已抢座位
+    - 🔍 任务状态追踪（等待开抢/抢票中/成功/失败/已暂停/已中断）
+    - ⏸️ 支持暂停，并可在发车前重新启动
+    - 💾 任务保存在本地，程序重启后仍可恢复
+    - 💳 成功任务显示成功时间和支付截止时间
+    - 📊 显示抢票进度、已选座位和已预订座位
 
 ### 📢 通知系统
 
@@ -74,6 +76,12 @@
     - 💬 企业微信群机器人
     - 📱 Markdown 格式消息
     - ⚡ 实时推送抢票结果
+
+- **钉钉机器人通知**
+    - 🤖 支持钉钉自定义群机器人 Webhook
+    - 🔑 支持关键词安全校验，消息会自动包含配置的关键词
+
+- 抢票成功、未完成、失败和异常都会发送通知；通知发送结果也会记录在控制台。
 
 ### 🛡️ 安全特性
 
@@ -105,6 +113,7 @@ BusGrab/
 ├── sso_auth.py               # 班车 OAuth 登录与回调兑换
 ├── task_manager.py           # 任务管理器
 ├── config.json               # 配置文件（运行时生成）
+├── tasks.sqlite3             # 本地持久化任务记录（运行时生成）
 ├── requirements.txt          # Python 依赖
 └── README.md                 # 本文档
 ```
@@ -183,7 +192,7 @@ python app.py
 
 1. 点击班车卡片上的 **选座** 按钮
 2. 查看座位布局和可用座位
-3. 左键点击选择座位
+3. 默认使用自动模式，设置目标数量即可；切换到手动模式后，可左键选择要尝试的座位
 4. 点击 **确认抢票** 创建任务
 
 ### 座位优先级设置
@@ -210,6 +219,10 @@ python app.py
 - 默认所有座位为中优先级
 - 已被预订的座位也可以设置优先级（用于候补）
 - 优先级配置会保存在浏览器本地
+
+### 手动抢票模式
+
+手动模式只尝试选中的座位，适合在开抢前提前指定座位，或在有退票时尝试候补。创建任务前请先选好座位。
 
 ### 自动抢票模式
 
@@ -274,6 +287,14 @@ python app.py
 2. 复制机器人的 Webhook 地址
 3. 粘贴到配置中
 
+#### 钉钉机器人通知
+
+1. 在钉钉群中添加自定义机器人，并选择关键词安全校验
+2. 在项目的 **通知配置** 中启用钉钉通知
+3. 填写机器人 Webhook 地址，以及钉钉安全设置中配置的关键词
+
+发送内容会自动包含该关键词。当前支持关键词校验方式；如机器人启用了加签或 IP 白名单，还需要额外配置相应支持。
+
 ---
 
 ## ⚙️ 配置说明
@@ -293,7 +314,8 @@ python app.py
   },
   "notification_methods": [
     "email",
-    "wechat_work"
+    "wechat_work",
+    "dingtalk"
   ],
   "email_config": {
     "smtp_server": "smtp.qq.com",
@@ -304,6 +326,10 @@ python app.py
   },
   "wechat_config": {
     "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+  },
+  "dingtalk_config": {
+    "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=...",
+    "keyword": "班车抢票"
   }
 }
 ```
@@ -383,12 +409,15 @@ Content-Type: application/json
 GET /api/tasks
 ```
 
-#### 取消/删除任务
+#### 暂停、重新启动和删除任务
 
 ```http
 POST /api/tasks/:task_id/cancel
+POST /api/tasks/:task_id/resume
 DELETE /api/tasks/:task_id
 ```
+
+`cancel` 接口用于暂停任务；已暂停或程序中断的任务可在发车前通过 `resume` 重新启动。
 
 #### 配置管理
 
@@ -469,6 +498,7 @@ POST /api/config
 
 - API 配置保存在服务器 `config.json` 文件中，不会丢失
 - 座位优先级保存在 `seat_priorities.json` 文件中，不会丢失
+- 任务记录保存在 `tasks.sqlite3` 文件中；超过保留期限的旧记录会自动清理
 
 ---
 
